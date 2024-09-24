@@ -1,5 +1,10 @@
 ---
 title: Resume Link
+format:
+  html:
+    code-links:
+      - text: MP1
+        href: mp1.qmd
 ---
 
 Hello World! I am Victor and this is my MS Data Analytics Journey!
