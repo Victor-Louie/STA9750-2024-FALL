@@ -1,0 +1,454 @@
+---
+title: "Mini Project #2"
+editor: visual
+---
+
+## **Introduction**
+
+------------------------------------------------------------------------
+
+This report presents an in-depth analysis of the process in generating fresh movie ideas with the aim of choosing the 'best' movie concept , highlighting key aspects to ultimately define a key performance indicator that will lead the team to an answer. To do so, I dove through IMDb data set and went through the historical trends in the industry to find successful and unsuccessful examples to develop a methodology for selecting the most promising movie concepts, making data-driven decisions that reflect the demand.
+
+## Data Overview
+
+------------------------------------------------------------------------
+
+The data tables used in this analysis includes the following:
+
+For this project, we will use data from the Internet Movie Database (IMDb). Specifically, we will use the tables from [the IMDb non-commercial release](https://datasets.imdbws.com/). These files are made freely available by IMDb for non-commercial use. The following information can be found: Movie Titles, Title Episodes, Ratings, Crew Members and principal actors.
+
+------------------------------------------------------------------------
+
+```{r message=FALSE}
+
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(stringr)
+library(gt)
+
+get_imdb_file <- function(fname){
+  BASE_URL <- "https://datasets.imdbws.com/"
+  fname_ext <- paste0(fname, ".tsv.gz")
+  if(!file.exists(fname_ext)){
+    FILE_URL <- paste0(BASE_URL, fname_ext)
+    download.file(FILE_URL, 
+                  destfile = fname_ext)
+  }
+  as.data.frame(readr::read_tsv(fname_ext, lazy=FALSE))
+}
+
+NAME_BASICS      <- get_imdb_file("name.basics")
+TITLE_BASICS     <- get_imdb_file("title.basics")
+TITLE_EPISODES   <- get_imdb_file("title.episode")
+TITLE_RATINGS    <- get_imdb_file("title.ratings")
+TITLE_CREW       <- get_imdb_file("title.crew")
+TITLE_PRINCIPALS <- get_imdb_file("title.principals")
+
+NAME_BASICS <- NAME_BASICS |> 
+  filter(str_count(knownForTitles, ",") > 1)
+
+TITLE_RATINGS <- TITLE_RATINGS |>
+  filter(numVotes >= 100)
+
+TITLE_BASICS <- TITLE_BASICS |>
+  semi_join(TITLE_RATINGS, 
+            join_by(tconst == tconst))
+
+TITLE_CREW <- TITLE_CREW |>
+  semi_join(TITLE_RATINGS, 
+            join_by(tconst == tconst))
+
+TITLE_EPISODES_1 <- TITLE_EPISODES |>
+  semi_join(TITLE_RATINGS, 
+            join_by(tconst == tconst))
+TITLE_EPISODES_2 <- TITLE_EPISODES |>
+  semi_join(TITLE_RATINGS, 
+            join_by(parentTconst == tconst))
+
+TITLE_EPISODES <- bind_rows(TITLE_EPISODES_1,
+                            TITLE_EPISODES_2) |>
+  distinct()
+
+TITLE_PRINCIPALS <- TITLE_PRINCIPALS |>
+  semi_join(TITLE_RATINGS, join_by(tconst == tconst))
+
+
+rm(TITLE_EPISODES_1)
+rm(TITLE_EPISODES_2)
+
+NAME_BASICS <- NAME_BASICS |>
+  mutate(birthYear = as.numeric(birthYear),
+         deathYear = as.numeric(deathYear))
+
+TITLE_BASICS <- TITLE_BASICS |> 
+  mutate(startYear = as.numeric(startYear),
+         endYear = as.numeric(endYear),
+         runtimeMinutes = as.numeric(runtimeMinutes),
+         isAdult = as.logical(isAdult))
+TITLE_EPISODES <- TITLE_EPISODES |>
+  mutate(seasonNumber = as.numeric(seasonNumber),
+         episodeNumber = as.numeric(episodeNumber))
+
+TITLE_PRINCIPALS <- TITLE_PRINCIPALS |>
+  mutate(ordering = as.numeric(ordering))
+
+TITLE_RATINGS <- TITLE_RATINGS |>
+  mutate(averageRating = as.numeric(averageRating),
+         numVotes = as.numeric(numVotes))
+
+NAME_BASICS |> separate_longer_delim(knownForTitles, ",") |> slice_head(n=10)
+```
+
+The previous code will download, clean, and join the tables. Key steps in processing the data involve filtering for relevant information. This process will help refine the data set to focus on movies that have had a measurable impact. For instance, by setting certain variables as numeric, we are then able to rank and group. Later on, these tables will be joined through for example, 'tconst', to identify correlations between ratings and genre to better understand what help drives movie success.
+
+```{r message=FALSE}
+#Task 2a: How many movies are in our data set? How many TV series? How many TV episodes?
+
+movies <- TITLE_BASICS |> count(titleType) |>
+  filter(titleType == "movie")
+  print(movies)
+tvSeries <- TITLE_BASICS |> count(titleType) |>
+  filter(titleType == "tvSeries")
+  print(tvSeries)
+tvEpisodes <- TITLE_BASICS |> count(titleType) |>
+  filter(titleType == "tvEpisode")
+  print(tvEpisodes)
+
+#There are 132,230 movies, 30,013 TV series and 156,860 TV episodes.
+  
+#Task 2b: Who is the oldest living person in our data set?
+
+oldest_living_person <- NAME_BASICS |>
+  filter(birthYear > 1907, is.na(deathYear)) |>
+  arrange(birthYear, na.rm = TRUE) |>
+  select(primaryName, birthYear) |>
+  slice(1)
+  print(oldest_living_person)
+
+#The oldest living person is Angel Acciaresi at 116 years old.
+
+```
+
+By filtering out the types of titles, I am able to find out the numeric quantity of each type. In this report, I will primary be focusing on movies, tvSeries and tvEpisode the most and filter out the others. It is also worth noting a blocker in which many people were not assigned an available deathYear when they should, thus the answer would need to be reviewed.
+
+```{#Task 2c: There is one TV Episode in this data set with a perfect 10/10 rating and at least 200,000 IMDb ratings. What is it? What series does it belong to?}
+
+perfect_rating <- TITLE_RATINGS |>
+  filter(averageRating == 10, numVotes >= 200000) |>
+  left_join(TITLE_BASICS, by = "tconst") |>
+  filter(titleType == "tvEpisode") |>
+  select(primaryTitle, averageRating, numVotes, titleType)
+  print(perfect_rating)
+
+#The episode name is called Ozymandias from Breaking Bad.
+
+#Task 2d: What four projects is the actor Mark Hamill most known for?
+
+Mark_Hamill <- NAME_BASICS |>
+  filter(primaryName == "Mark Hamill") |>
+  select(primaryName, knownForTitles) |>
+  separate_longer_delim(knownForTitles, ",") |>
+  slice_head(n = 4)
+  print(Mark_Hamill)
+Mark_Hamill_top4 <- Mark_Hamill |>
+  left_join(TITLE_BASICS, by = c("knownForTitles" = "tconst")) |>
+  slice_head(n = 4)|>
+  select(originalTitle)
+  print(Mark_Hamill_top4)
+
+#Mark Hamill is most known for Star Wars, Star Wars: Episode VIII - The Last Jedi, Star Wars: Episode V - The Empire Strikes Back, Star Wars: Episode VI - Return of the Jedi
+
+#Task 2e: What TV series, with more than 12 episodes, has the highest average rating?
+
+tv_series_12 <- TITLE_EPISODES |>
+  filter(episodeNumber >= 12) |>
+  left_join(TITLE_RATINGS, by = "tconst") |>
+  arrange(desc(averageRating)) |>
+  slice(1)
+  print(tv_series_12)
+tv_series_12_name <- TITLE_BASICS |>
+  filter(tconst %in% tv_series_12$tconst)|>
+  select(primaryTitle)
+  print(tv_series_12_name)
+
+# Series finale has the highest average rating.
+```
+
+Here the data was filtered by averageRating and numVote which will be cruical in determining the success of a movie. AverageRating shows that people enjoyed the movie and the numVote will indicator there is a lot of people watching or a few people are watching and that averageRating could be inflated due to the low viewer count. Learning to identify people's success of known work will come in handy when assigning specific tasks to each person.
+
+```{r message=FALSE}
+
+#Task 2f: The TV series Happy Days (1974-1984) gives us the common idiom “jump the shark”. The phrase comes from a controversial fifth season episode (aired in 1977)in which a lead character literally jumped over a shark on water skis.Idiomatically, it is used to refer to the moment when a once-great show becomes ridiculous and rapidly looses quality.Is it true that episodes from later seasons of Happy Days have lower average ratings than the early seasons?
+
+happy_days <- TITLE_BASICS |>
+  filter(primaryTitle == "Happy Days")
+  print(happy_days_tconst)
+
+happy_days_episodes <- TITLE_EPISODES |>
+  filter(parentTconst %in% happy_days$tconst) |>
+  inner_join(TITLE_RATINGS, by = "tconst") |>
+  mutate(seasonNumber = as.integer(seasonNumber))
+  print(happy_days_episodes)
+
+happy_days_episodes <- happy_days_episodes |>
+  mutate(season = if_else(seasonNumber <= 5, "Early", "Later"))
+  print(happy_days_episodes)
+
+average_ratings <- happy_days_episodes |>
+  group_by(season) |>
+  summarise(average_rating = mean(averageRating, na.rm = TRUE))
+  print(average_ratings)
+
+#Yes it is true that later seasons of Happy Days have lower average ratings than the early seasons
+```
+
+Here, by joining the TITLE_EPISODES and TITLE_RATINGS data sets, we are able to see the individual rating of each episodes in Happy Days. By aggregating the episodes we are then able to decisively determine whether later seasons of Happy Days have a lower or higher average ratings than the early seasons. I mutated a column to group individual seasons to either Early seasons or Late seasons. This will be a similar process in determining whether a movie is considered a success or not by assigning a success score.
+
+---
+
+As a result the following questions are some examples that the data set can answer:
+
+1.  How many movies are in our data set? How many TV series? How many TV episodes?
+
+    There are 132,230 movies, 30,013 TV series and 156,860 TV episodes.
+
+2.  Who is the oldest living person in our data set?
+
+    The oldest living person is Angel Acciaresi at 116 years old.
+
+3.  There is one TV Episode in this data set with a perfect 10/10 rating and at least 200,000 IMDb ratings. What is it? What series does it belong to?
+
+    The episode name is called Ozymandias from Breaking Bad.
+
+```{=html}
+<!-- -->
+```
+4.  What four projects is the actor Mark Hamill most known for?
+
+    Mark Hamill is most known for Star Wars, Star Wars: Episode VIII - The Last Jedi, Star Wars: Episode V - The Empire Strikes Back, Star Wars: Episode VI - Return of the Jedi
+
+5.  What TV series, with more than 12 episodes, has the highest *average* rating?
+
+    Series finale has the highest average rating.
+
+6.  The TV series *Happy Days* (1974-1984) gives us the common idiom [“jump the shark”](https://en.wikipedia.org/wiki/Jumping_the_shark). The phrase comes from a controversial fifth season episode (aired in 1977) in which a lead character literally jumped over a shark on water skis. Idiomatically, it is used to refer to the moment when a once-great show becomes ridiculous and rapidly looses quality.
+
+    Is it true that episodes from later seasons of *Happy Days* have lower average ratings than the early seasons?
+
+    Yes it is true that later seasons of Happy Days have lower average ratings than the early seasons
+
+---
+
+```{r message=FALSE}
+TITLE_RATINGS <- TITLE_RATINGS |>
+  mutate(success_score = (0.88 * averageRating) + (0.12 * log(numVotes)))
+  print(TITLE_RATINGS)
+```
+
+This code block here shows the equation of success metric I will be using to determine the success of a movie. The numeric values here are chosen because the highest rated movie will be extremely close to a 10 and thus, a 1-10 success score will be assigned to each movie.
+
+```{r message=FALSE}
+#Task 3a: Choose the top 5-10 movies on your metric and confirm that they were indeed box office
+  
+top_successful_movies_5 <- TITLE_RATINGS|>
+  inner_join(TITLE_BASICS, by = "tconst")|>
+  filter(titleType == "movie")|>
+  arrange(desc(success_score))|>
+  select(tconst,primaryTitle, averageRating,success_score,numVotes,titleType)|>
+  slice(1:5)
+  print(top_successful_movies_5)
+
+#Task 3b: Choose 3-5 movies with large numbers of IMDb votes that score poorly on your success metric and confirm that they are indeed of low quality.
+  
+top_unsuccessful_movies_3 <- TITLE_RATINGS |>
+inner_join(TITLE_BASICS, by = "tconst")|>
+  filter(titleType == "movie", numVotes >= 100000, averageRating <= 5)|>
+  arrange(success_score) |>
+  select(tconst,primaryTitle, averageRating,success_score,numVotes,titleType)|>
+  slice(1:3)
+  print(top_unsuccessful_movies_3)
+  
+#Task 3c: Choose a prestige actor or director and confirm that they have many projects with high scores on your success metric.
+  
+Tim_Burton <- NAME_BASICS |>
+  filter(primaryName == "Tim Burton") |>
+  select(primaryName, knownForTitles) |>
+  separate_longer_delim(knownForTitles, ",") |>
+  inner_join(TITLE_RATINGS, by = c("knownForTitles" = "tconst")) |>
+  slice_head(n = 4)
+  print(Tim_Burton)
+Tim_Burton_top4 <- Tim_Burton |>
+  left_join(TITLE_BASICS, by = c("knownForTitles" = "tconst")) |>
+  slice_head(n = 4)|>
+  select(originalTitle)
+  print(Tim_Burton_top4)
+
+#Task 3d: Perform at least one other form of ‘spot check’ validation. Choose the top 5 tvSeries and confirm that they were indeed box office.
+  
+top_successful_tvSeries_5 <- TITLE_RATINGS|>
+  inner_join(TITLE_BASICS, by = "tconst")|>
+  filter(titleType == "tvSeries")|>
+  arrange(desc(success_score))|>
+  select(tconst,primaryTitle, averageRating,success_score,numVotes,titleType)|>
+  slice(1:5)
+ print(top_successful_tvSeries_5)
+```
+
+Before determining a specific numeric value as a benchmark, I have to validate the equation of my success metric. To do so, I would compare it to current successful movies and unsuccessful movies to see that the average Rating and my success_score should be somewhat similar in terms of trend. It would be in my interest to filter out to entries with high quality and broad popular awareness. The above code block tells me that my success metric was validated by confirming successful and unsuccessful movies as well as confirming successful projects from prestige director Tim Burton.
+
+```{r message=FALSE}
+#Task 3e:Come up with a numerical threshold for a project to be a ‘success’; that is, determine a value x such that movies above x are all “solid” or better.
+  
+successful_projects <- TITLE_RATINGS |>
+  filter(averageRating >= 8, numVotes >= 100000)|>
+  arrange(success_score)|>
+  slice(1)|>
+  select(success_score)
+  print(successful_projects)
+
+#Our success threshold has a value of 8.42
+
+```
+
+The success threshold for this project, as determined by our analysis, is a score of 8.42. This threshold is based on filtering movies with an average rating of at least 8 and a minimum of 100,000 votes. The rationale behind this is that movies that meet or exceed these criteria can be considered "solid" or better, signifying consistent audience approval and popularity.
+
+```{r message=FALSE}
+#Task 4: Good “genre” for your next film based on the entire data set.
+  
+successful_genre <- TITLE_BASICS |>
+  inner_join(TITLE_RATINGS, by = "tconst") |>
+  filter(averageRating >= 8, numVotes >= 10000) |>
+  mutate(success_score = (0.88 * averageRating) + (0.12 * log(numVotes))) |>
+  filter(success_score > 8.42)|>
+  separate_longer_delim(genres, ",") |>
+  group_by(genres)|>
+  summarize(
+    avg_rating = mean(averageRating, na.rm = TRUE),
+    avg_success_score = mean(success_score, na.rm = TRUE),
+    count = n()
+  ) |>
+  filter(count >= 500)|>
+  arrange(desc(avg_success_score))
+  print(successful_genre)
+
+ggplot(successful_genre, aes(x = reorder(genres, -count), y = count)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(title = "Top 5 Most Successful Genres", x = "Genres", y = "Success Count") +
+  theme(axis.text.x = element_text(hjust = 1))
+
+#Task 4 cont.: Good “genre” for your next film since 2020.
+
+successful_genre <- TITLE_BASICS |>
+  inner_join(TITLE_RATINGS, by = "tconst") |>
+  filter(startYear >= 2020)|>
+  filter(averageRating >= 8, numVotes >= 10000) |>
+  mutate(success_score = (0.88 * averageRating) + (0.12 * log(numVotes))) |>
+  filter(success_score > 8.42)|>
+  separate_longer_delim(genres, ",") |>
+  group_by(genres)|>
+  summarize(
+    avg_rating = mean(averageRating, na.rm = TRUE),
+    avg_success_score = mean(success_score, na.rm = TRUE),
+    count = n()
+  ) |>
+  filter(count >= 10)|>
+  arrange(desc(avg_success_score))|>
+  slice(1:5)
+print(successful_genre)
+ggplot(successful_genre, aes(x = reorder(genres, -count), y = count)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(title = "Top 5 Most Successful Genres", x = "Genres", y = "Success Count") +
+  theme(axis.text.x = element_text(hjust = 1))
+#Based on findings, I would select Animation to be the genre for the next project. It is not under or over saturated and has the highest average rating and average success score based on my findings.
+```
+
+Here, I looked at trends that succeeded over time based on genre. I ultimately selected Animation as my genre, despite not having the highest AverageRating or success_score using the entire data set. However, this makes sense because the Animation genre has only became popular within the recent years with new generation technology. Looking at the data since 2020, Animation ranks 1st with a success_score of 9.22 and is not "oversatured" compared to Drama or Action. The results are displayed in tables showcasing the top 5 most successful genres based on their "success count".
+
+## 
+
+```{r message=FALSE}
+#Task 5: Identify (at least) two actors and one director who you will target as the key talent for your movie. 
+
+Animation_Project <- TITLE_BASICS |>
+  inner_join(TITLE_RATINGS, by = "tconst") |>
+  filter(averageRating >= 8, numVotes >= 10000) |>
+  mutate(success_score = (0.88 * averageRating) + (0.12 * log(numVotes))) |>
+  filter(success_score > 8.42)|>
+  separate_longer_delim(genres, ",") |>
+  filter(titleType == "movie", genres == "Animation")|>
+  select(tconst,primaryTitle, averageRating,numVotes,success_score,genres)
+  print(Animation_Project)
+
+Animation_Director <- TITLE_PRINCIPALS|>
+  filter(category == "director")|>
+  inner_join(Animation_Project, by = "tconst") |>
+  inner_join(NAME_BASICS, by = "nconst") |>
+  group_by(primaryName) |>
+  summarise(success_count = n())|>
+  arrange(desc(success_count)) 
+  print(Animation_Director)
+
+  
+Animation_Actors_2 <- TITLE_PRINCIPALS|>
+  filter(category == "actor")|>
+  inner_join(Animation_Project, by = "tconst") |>
+  inner_join(NAME_BASICS, by = "nconst") |>
+  group_by(primaryName) |>
+  summarise(success_count = n())|>
+  arrange(desc(success_count))|>
+  slice(1:10)
+  print(Animation_Actors_2)
+  
+Director_Table <- Animation_Director |>
+  gt() |>
+  tab_header(
+    title = "Top Successful Directors in Animation"
+   ) |>
+  cols_label(
+    primaryName = "Director Name",
+    success_count = "Successful Count"
+  )
+
+Actor_Table <- Animation_Actors_2|>
+  gt() |>
+  tab_header(
+    title = "Top Successful Actors in Animation"
+  ) |>
+  cols_label(
+    primaryName = "Actor Name",
+    success_count = "Successful Count"
+  )
+
+print(Director_Table)
+print(Actor_Table)
+
+#Director: Hayao Miyazaki Actors: John Ratzenberger + John DiMaggio
+```
+
+Sticking with the Animation genre, I will have to find successful personnel in the genre. I then identified two actors and one director who will anchor the projected based on their past success. I choose an older established director who is highly successful and two middle-aged actors who are both highly successful but never worked together. First, the data set is filtered to find highly rated animation films above the success benchmark, 8.42, and then count how many times they have contributed to highly successful animation movies. The results are displayed in tables showcasing the top directors and actors based on their "success count" in the animation genre.
+
+```{r message=FALSE}
+#Task 6: Find a classic movie to remake with your key talent. The original should have a large number of IMDb ratings, a high average rating, and not have been remade in the past 25 years.4
+
+Animation_Project <- TITLE_BASICS |>
+  inner_join(TITLE_RATINGS, by = "tconst") |>
+  filter(averageRating >= 8, numVotes >= 10000, startYear <= 1999) |>
+  separate_longer_delim(genres, ",") |>
+  filter(titleType == "movie", genres == "Animation")|>
+  select(primaryTitle, startYear,averageRating,numVotes,success_score,genres)|>
+  arrange(desc(averageRating))
+  print(Animation_Project)
+  
+#I will choose Grave of the Fireflies
+```
+
+The goal here is to find a classic movie to remake that must not haven been remade in the past 25 years. The results are sorted by average rating to prioritize the best-rated movies and after reviewing the results, "Grave of the Fireflies" was chosen as the best candidate for a remake. This film has not been remade in the past 25 years and tells a modern story given the emotional depth. Furthermore, the director, Hayao Miyazaki, is the director of this film making, thus with another key talent being starred many people would want to come in theatre.
+
+## Elevator Pitch
+
+------------------------------------------------------------------------
+
+Our next project is a classic remake of **"Grave of the Fireflies (1988)"**, one of the most beloved animated films in history by Studio Ghibli. With an IMDb rating of **8.5** and nearly **350,000 votes**, this timeless classic has not been remade in over 25 years, making it the perfect candidate for a revival. We have assembled a stellar team to bring this story to a new generation.
+
+**Directed by the legendary Hayao Miyazaki**, the visionary behind Studio Ghibli, the film will also star **John Ratzenberger**, a staple of American animation, known for his roles in *Toy Story* and *Monsters University*, as well as **John DiMaggio**, the iconic voice actor behind *Adventure Time*. Both actors have been involved in at least four highly successful projects each, bringing unparalleled experience to the team.
