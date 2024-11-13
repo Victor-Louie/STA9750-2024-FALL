@@ -1,0 +1,403 @@
+---
+title: "Mini Project #3"
+editor: visual
+---
+
+```{r message=FALSE}
+
+library(sf)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(stringr)
+library(httr)
+library(here)
+library(gt)
+
+# Define file paths
+president_data_path <- "./1976-2020-president.csv"
+house_data_path <- "./1976-2022-house.csv"
+
+# Load the datasets
+president_data <- read.csv(president_data_path) 
+ecv_president_data <- president_data |>
+  filter(year == 2000) |>
+  select(state, state_po, candidate, candidatevotes) |>
+  group_by(state) |>
+  mutate(majority_votes = max(candidatevotes)) |>
+  filter(candidatevotes == majority_votes) |>
+  select(state, state_po, candidate)
+house_data <- read.csv(house_data_path) 
+
+ecv_house_data <- house_data |>
+  filter(year == 2000) |>
+  select(state, district) |>
+  group_by(state) |>
+  summarize(electoral_votes = n_distinct(district)+2)
+
+ecv_data <- inner_join(ecv_president_data, ecv_house_data, by = 'state') |>
+  mutate(state = tolower(state))
+
+```
+
+The previous code will download, clean, and join the table loads presidential and House election data for the year 2000. Filters the winning candidate in each state and calculates the number of electoral votes per state. It then combines this information into a single dataset, which includes the state, the winner of the presidential election, and the total electoral votes for that state.
+
+```{r message=FALSE}
+
+dir.create("data/shapefiles", showWarnings = FALSE, recursive = TRUE)
+shapefile_dir <- here("data/shapefiles")
+dir.create(shapefile_dir, showWarnings = FALSE, recursive = TRUE)
+base_url <- "https://cdmaps.polisci.ucla.edu/shp/"
+download_shapefiles <- function(start_session, end_session, base_url, save_dir) {
+  for (session in start_session:end_session) {
+    file_name <- paste0("districts", sprintf("%03d", session), ".zip")
+    url <- paste0(base_url, file_name)
+    destfile <- file.path(save_dir, file_name)
+    if (!file.exists(destfile)) {
+      tryCatch({
+        GET(url, write_disk(destfile, overwrite = TRUE))
+        message(paste("Downloaded:", file_name))
+      }, error = function(e) {
+        message(paste("Failed to download:", file_name, "with error:", e$message))
+      })
+    } else {
+      message(paste("File already exists:", file_name))
+    }
+  }
+}
+download_shapefiles(93, 112, base_url, shapefile_dir)
+download_shapefiles_modern <- function(start_year, end_year, base_url, save_dir) {
+  for (year in seq(start_year, end_year, by = 2)) {  # Congress is updated every two years
+    file_name <- paste0("cb_", year, "_us_cd116_500k.zip")  # Adjust naming as per Census format
+    url <- paste0(base_url, file_name)
+    destfile <- file.path(save_dir, file_name)
+    if (!file.exists(destfile)) {
+      tryCatch({
+        GET(url, write_disk(destfile, overwrite = TRUE))
+        message(paste("Downloaded:", file_name))
+      }, error = function(e) {
+        message(paste("Failed to download:", file_name, "with error:", e$message))
+      })
+    } else {
+      message(paste("File already exists:", file_name))
+    }
+  }
+}
+download_shapefiles_modern(2014, 2022, base_url, shapefile_dir)
+```
+
+The code will automatically download shape zip files and ensures that the files already exist - can only be downloaded once. The first function handles older data (sessions 93-112), while the second function handles modern data (2014-2022). The files contains a systematic and interpretable naming convention.
+
+```{r message=FALSE}
+
+#Task 3 Part 1: 3.1 Which states have gained and lost the most seats in the US House of Representatives between 1976 and 2022?
+
+house_seats <- house_data |>
+  distinct(year, state, district) |>
+  group_by(year, state) |>
+  summarise(seat_count = n(), .groups = "drop")
+
+seat_changes <- house_seats |>
+  pivot_wider(names_from = year, values_from = seat_count)
+
+#Calculate seat change between 1976 and 2022
+seat_changes <- seat_changes |>
+  mutate(seat_change = `2022` - `1976`)
+
+#Separate states with the highest seat changes: gained/lost
+top_gained <- top_n(seat_changes, 5, seat_change)
+top_lost <- top_n(seat_changes, -5, seat_change)
+
+
+# Step 5: Plot for top gained seats
+gained_seat_plot <- ggplot(top_gained, aes(x = reorder(state, seat_change), y = seat_change, fill = seat_change)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Top 5 States with Most Gained Seats (1976-2022)",
+       x = "State",
+       y = "Number of Seats Gained") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  theme_minimal()
+
+# Step 6: Plot for top lost seats
+lost_seat_plot <- ggplot(top_lost, aes(x = reorder(state, seat_change), y = seat_change, fill = -seat_change)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Top 5 States with Most Lost Seats (1976-2022)",
+       x = "State",
+       y = "Number of Seats Lost") +
+  scale_fill_gradient(low = "pink", high = "darkred") +
+  theme_minimal()
+
+```
+
+The analysis calculates changes in U.S. House seats by state from 1976 to 2022, identifying the top 5 states that gained the most seats and the top 5 that lost the most.
+
+```{r message=FALSE}
+list(gained_seat_plot, lost_seat_plot)
+```
+
+Here displays the two bar charts which visually display these states: blue for gains and red for losses. This provides a clear view of shifts in representation over time.
+
+```{r message=FALSE}
+
+fusion_analysis <- house_data |>
+  mutate(is_major_party = party %in% c("DEMOCRAT", "REPUBLICAN")) |>
+  group_by(year, district, candidate) |>
+  summarise(
+    total_votes_all_lines = sum(candidatevotes),
+    major_party_votes = sum(candidatevotes[is_major_party]),
+    .groups = "drop"
+  )
+
+top_with_fusion_all_time <- fusion_analysis |>
+  group_by(year, district) |>
+  filter(total_votes_all_lines == max(total_votes_all_lines)) |>
+  select(year, district, candidate, total_votes_all_lines)
+print(top_with_fusion_all_time)
+
+top_without_fusion_all_time <- fusion_analysis |>
+  group_by(year, district) |>
+  filter(major_party_votes == max(major_party_votes)) |>
+  select(year, district, candidate, major_party_votes)
+print(top_without_fusion_all_time)
+
+election_outcome_comparison <- top_with_fusion_all_time |>
+  inner_join(top_without_fusion_all_time, by = c("year", "district"), suffix = c("_fusion", "_nonfusion")) |>
+  filter(candidate_fusion != candidate_nonfusion) |>
+  select(year, district, candidate_fusion, fusion_votes = total_votes_all_lines, candidate_nonfusion, nonfusion_votes = major_party_votes)
+```
+
+The code displays any elections in our data where the election would have had a different outcome if the “fusion” system was not used and candidates only received the votes their received from their “major party line” (Democrat or Republican) and not their total number of votes across all lines. It starts by sorting candidates into the two major parties. Then, it identifies the top candidates under both scenarios, with the fusion and without, highlighting cases where the fusion system led to a different winner by listing the candidates and vote counts from each scenario.
+
+```{r message=FALSE}
+
+# Aggregate presidential votes 
+presidential_party_votes <- president_data |>
+  filter(office == "US PRESIDENT", year >= 1976, year <= 2012) |>
+  group_by(year, state) |>
+  summarise(president_votes = sum(candidatevotes), .groups = "drop")
+
+# Aggregate congressional votes 
+congressional_party_votes <- house_data |>
+  filter(office == "US HOUSE", year >= 1976, year <= 2012) |>
+  group_by(year, state) |>
+  summarise(congressional_votes = sum(candidatevotes), .groups = "drop")
+
+# Merge the two datasets
+merged_votes <- presidential_party_votes |>
+  inner_join(congressional_party_votes, by = c("year", "state"))
+
+# Calculate the difference between presidential and congressional votes
+
+state_votes_long <- merged_votes |>
+  pivot_longer(cols = c(president_votes, congressional_votes), 
+               names_to = "vote_type", 
+               values_to = "votes")
+
+# Select top 15 states by total votes
+top_15_states <- state_votes_long |>
+  group_by(state) |>
+  summarise(total_votes = sum(votes)) |>
+  arrange(desc(total_votes)) |>
+  slice_head(n = 15)
+
+# Filter data for top 15 states
+top_15_votes_data <- state_votes_long |>
+  filter(state %in% top_15_states$state)
+
+# Plotting the top 15 states with a clean y-axis scale
+ggplot(top_15_votes_data, aes(x = reorder(state, -votes), y = votes, fill = vote_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Top 15 States by Total Votes: Presidential vs. Congressional (1976 - 2012)",
+       x = "States",
+       y = "Total Votes",
+       fill = "Vote Type") +
+  theme_minimal() +
+  coord_flip() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(labels = scales::comma_format())
+```
+
+This code compares the total vote of presidential and congressional candidates by the top 15 state to assess whether presidential candidates typically outperform or underperform relative to their congressional counterparts. I choose the top 15 because anything too large will cause the graph to be too cluttered. By aggregating votes at the state level, this analysis reveals trends over time and across states, examining whether Democratic or Republican presidential candidates tend to receive more votes than all congressional candidates of the same party. Observing changes across election cycles, it can indicate shifts in popularity for specific presidents or general party strength in particular states.
+
+```{r message=FALSE}
+
+read_shp_from_zip <- function(zip_filename, extract_dir = "extracted_shp") {
+  # Create directory for extraction if it doesn't already exist
+  if (!dir.exists(extract_dir)) {
+    dir.create(extract_dir)
+  }
+  
+  print(extract_dir)
+  
+  # List contents of the zip file to locate .shp and related files
+  zip_contents <- unzip(zip_filename, list = TRUE)
+  print(zip_contents)
+  
+  shp_related_files <- zip_contents$Name[grepl("\\.(shp|dbf|shx|prj)$", zip_contents$Name)]
+  print(shp_related_files)
+  
+  # Extract all necessary files to the specified directory
+  unzip(zip_filename, files = shp_related_files, exdir = extract_dir)
+  
+  # Find the .shp file path
+  shp_file <- shp_related_files[grepl("\\.shp$", shp_related_files)]
+  shp_path <- file.path(extract_dir, shp_file)
+  
+  # Check if the .shp file exists before reading
+  if (file.exists(shp_path)) {
+    sf <- read_sf(shp_path)
+  } else {
+    stop("Failed to locate the .shp file after extraction.")
+  }
+  
+  return(sf)
+}
+
+# Example usage:
+us_sf <- read_shp_from_zip("data/shapefiles/districts106.zip", extract_dir = "us_shapefiles")
+
+sf_use_s2(FALSE)
+
+suppressMessages(
+  us_sf <- us_sf |>
+    select(STATENAME, geometry) |>
+    mutate(STATENAME = tolower(STATENAME)) |>
+    filter(STATENAME != 'alaska', STATENAME != 'hawaii') |>
+    group_by(STATENAME) |>
+    summarise(geometry = st_union(geometry)) |>
+    ungroup()
+)
+
+ecv_map <- left_join(us_sf, ecv_data, by = c('STATENAME' = 'state'))
+
+ggplot(ecv_map, aes(geometry = geometry, label = electoral_votes)) + 
+  geom_sf(data = subset(ecv_map, candidate == 'GORE, AL'), fill = 'Sky Blue', color = 'white') +
+  geom_sf(data = subset(ecv_map, candidate == 'BUSH, GEORGE W.'), fill = 'Light Coral', color = 'white') +
+  geom_sf_text(color = 'black') +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank()
+  )
+```
+
+A map is created showing electoral votes for the 2000 U.S. presidential election, with states colored based on electoral votes and labeled by candidate, highlighting the results for Al Gore and George W. Bush.
+
+```{r message=FALSE}
+
+## Faceted Chloropleth using gganimate
+# Filter for presidential data in the years 1988, 2000, and 2012
+filtered_data <- president_data |>
+  filter(office == "US PRESIDENT", year %in% c(1988, 2000, 2012))
+
+# Determine the highest candidate votes for each party by state and year
+highest_votes_per_party <- filtered_data |>
+  group_by(year, state, party_simplified) |>
+  summarise(total_votes = sum(candidatevotes, na.rm = TRUE), .groups = "drop")
+
+# Identify the winning party for each state and year
+state_winners_atlarge <- highest_votes_per_party |>
+  group_by(year, state) |>
+  filter(total_votes == max(total_votes)) |>
+  slice(1) |>
+  ungroup()
+
+# Create GT table
+gt_table <- state_winners_atlarge |>
+  arrange(year, state) |>
+  gt() |>
+  tab_header(
+    title = "Winning Party by State in 1988, 2000, and 2012",
+    subtitle = "Party with Highest Total Candidate Votes per State and Year"
+  ) |>
+  cols_label(
+    year = "Year",
+    state = "State",
+    party_simplified = "Winning Party",
+    total_votes = "Total Votes"
+  ) |>
+  fmt_number(columns = vars(total_votes), decimals = 0) |>
+  tab_style(style = cell_text(weight = "bold"), locations = cells_column_labels())
+
+print(gt_table)
+
+# Bar chart for party count per year
+party_count_per_year <- state_winners_atlarge |>
+  count(year, party_simplified) |>
+  arrange(year, desc(n))
+
+ggplot(party_count_per_year, aes(x = factor(year), y = n, fill = party_simplified)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = "Party Count per Year in US Presidential Elections (1988, 2000, 2012)",
+    x = "Year",
+    y = "Number of States",
+    fill = "Party"
+  ) +
+  scale_fill_manual(values = c("DEMOCRAT" = "blue", "REPUBLICAN" = "red", "OTHER" = "grey")) +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+The code filters U.S. presidential election data for the years 1988, 2000, and 2012, and identifies the winning party in each state for each of these years based on total candidate votes. A GT table is created to display the winning party by state. Additionally, a bar chart is generated showing the number of states won by each major party in each of the selected years, with colors representing the different parties. The results highlight the dominance of the major parties in these presidential elections.
+
+```{r message=FALSE}
+# Create electoral college values based on shapefiles for 1988 and 2012
+CD_100 <- read_shp_from_zip(file.path(shapefile_dir, "districts106.zip"), extract_dir = "us_shapefiles")|>
+  mutate(STATENAME = tolower(STATENAME)) |>
+  as.data.frame() |>
+  group_by(STATENAME) |>
+  summarise(EC = n() + 2)
+
+# Winning party for each state in 1988
+vote_results_1988 <- president_data |>
+  filter(year == 1988) |>
+  mutate(state = tolower(state)) |>
+  group_by(state) |>
+  summarise(
+    winning_party = party_simplified[which.max(candidatevotes)],
+    total_votes = max(candidatevotes)
+  ) |>
+  ungroup()
+
+state_abbreviations <- data.frame(
+  state = tolower(c("alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho", "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine", "maryland", "massachusetts", "michigan", "minnesota", "mississippi", "missouri", "montana", "nebraska", "nevada", "new hampshire", "new jersey", "new mexico", "new york", "north carolina", "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina", "south dakota", "tennessee", "texas", "utah", "vermont", "virginia", "washington", "west virginia", "wisconsin", "wyoming", "district of columbia")),
+  abbreviation = c("AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC")
+)
+
+# Combine EC with winning party for 1988
+EC_1988 <- CD_100 |>
+  left_join(vote_results_1988, by = c("STATENAME" = "state")) |>
+  mutate(winning_party = if_else(STATENAME == "district of columbia" & is.na(winning_party), "DEMOCRAT", winning_party)) |>
+  select(STATENAME, winning_party, EC) |>
+  rename(state = STATENAME) |>
+  left_join(state_abbreviations, by = "state") |>
+  rename(Abbreviation = abbreviation)
+
+# Repeat for 2012
+CD_112 <- read_shp_from_zip(file.path(shapefile_dir, "districts112.zip"), extract_dir = "us_shapefiles")|>
+  mutate(STATENAME = tolower(STATENAME)) |>
+  as.data.frame() |>
+  group_by(STATENAME) |>
+  summarise(EC = n() + 2)
+
+vote_results_2012 <- president_data |>
+  filter(year == 2012) |>
+  mutate(state = tolower(state)) |>
+  group_by(state) |>
+  summarise(
+    winning_party = party_simplified[which.max(candidatevotes)],
+    total_votes = max(candidatevotes)
+  ) |>
+  ungroup()
+
+EC_2012 <- CD_112 |>
+  left_join(vote_results_2012, by = c("STATENAME" = "state")) |>
+  mutate(winning_party = if_else(STATENAME == "district of columbia" & is.na(winning_party), "DEMOCRAT", winning_party)) |>
+  select(STATENAME, winning_party, EC) |>
+  rename(state = STATENAME) |>
+  left_join(state_abbreviations, by = "state")
+```
+
+Finally, using shapefiles to calculate the number of electoral votes (EC) for each state based on congressional districts. It reads in shapefiles for each election year, counts the districts per state, and adds 2 for the two Senate seats, resulting in the total EC for each state. The code then determines the winning party for each state in 1988 and 2012 by filtering the presidential vote data, identifying the party with the most votes in each state.
